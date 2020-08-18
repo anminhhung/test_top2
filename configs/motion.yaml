@@ -1,0 +1,20 @@
+MOTION_MODEL:
+    ROI_DEFAULT: [[7, 441], [439, 150], [812, 153], [1225, 465]]
+    
+    center_only: True
+    enabled: True
+    n_steps: 1
+
+    # track_nms_thresh: 0.5
+    tracks_min_area_val: 900
+    tracks_ROI_in: 0.1
+    tracks_object_thresh: 1.0e-05
+
+    detection_ROI_in: 0.2
+    detection_max_area_val: 100000
+    detection_min_area_val: 1100
+    # detection_nms_thresh: 0.15
+    detection_object_thresh: 0.3
+    
+    nms_thresh: 0.3
+    min_length_trajectory: 50
