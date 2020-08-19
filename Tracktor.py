@@ -14,6 +14,10 @@ class Track(object):
         self.number_pred_det = {0: 0, 1: 0, 2:0, 3:0} 
         self.number_pred_track = {0: 0, 1: 0, 2:0, 3:0} 
         self.classify = False # If true => turn on classify module
+        self.point_in = None
+        self.point_out = None
+        self.best_bbox = None
+        self.class_id = None
 
     def has_positive_area(self):
         check = self.position[2] > self.position[0] and self.position[3] > self.position[1]

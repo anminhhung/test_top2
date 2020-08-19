@@ -16,5 +16,5 @@ MOTION_MODEL:
     # detection_nms_thresh: 0.15
     detection_object_thresh: 0.3
     
-    nms_thresh: 0.3
+    nms_thresh: 0.2
     min_length_trajectory: 50

@@ -13,10 +13,13 @@ import imutils.video
 from shapely.geometry import Point, Polygon
 from collections import deque
 
+from src.classify import mobileNet
 from src.detect import build_detector_v3
 from videocaptureasync import VideoCaptureAsync
 from utils.parser import get_config
+from utils.utils import check_in_polygon, init_board, write_board
 from utils.utils import compare_class, get_GT_class_name
+from utils import MOI
 
 from Tracktor import Track, get_center, get_height, get_width, make_pos
 
@@ -28,12 +31,16 @@ class VideoTracker(object):
         self.video_path = args.VIDEO_PATH
         self.detector = build_detector_v3(cfg)
         self.motion_model_cfg = cfg.MOTION_MODEL
+        self.number_MOI = cfg.CAM.NUMBER_MOI
+        self.polygon_ROI = Polygon(cfg.CAM.ROI_DEFAULT)
+        self.use_classify = args.use_classify
+        self.video_name = os.path.basename(args.VIDEO_PATH).split('.')[0]
 
         # set the values to
         # self.reset()
         self.tracks = []
         self.inactive_tracks = []
-        self.track_num = 0
+        self.track_num = 1
         self.results = {}
         self.countor_restults = {}
         self.im_index = 0
@@ -295,6 +302,7 @@ class VideoTracker(object):
     def check_nms(self, track_box, track_score, index_track, det_boxes, det_scores):
         # print("[INFO] track_Box: ", track_box)
         len_det_boxes = len(det_boxes)
+        deleted_list = []
         for i in range(len_det_boxes):
             if self.check_intersect_reg(track_box, det_boxes[i]):
                 IOU = self.bb_intersection_over_union(track_box, det_boxes[i])
@@ -304,17 +312,20 @@ class VideoTracker(object):
                     if track_score < det_scores[i]:
                         self.tracks[index_track].position = det_boxes[i] 
                         self.tracks[index_track].score = det_scores[i]
-                
-                    det_boxes = np.delete(det_boxes, i, axis=0)
-                    det_scores = np.delete(det_scores, i)
+                    deleted_list.append(i)
+                    # det_boxes = np.delete(det_boxes, i, axis=0)
+                    # det_scores = np.delete(det_scores, i)
+
                     # print("[INFO] remove: ", i)
                     # print("-------------")
                     # print("[INFO] det_boxes after remove: \n", det_boxes)
 
-                    return det_boxes, det_scores
-                
+                    # return det_boxes, det_scores
+
+        # det_boxes = [det_boxes[i] for i in range(len_det_boxes) if i not in deleted_list]
+        # det_scores = [det_scores[i] for i in range(len_det_boxes) if i not in deleted_list]
         # print("-------------")
-        # return det_boxes, det_scores
+        return det_boxes, det_scores
 
     def resize_box(self, box, original_size, new_size):
         ratios = (new_size[0]/original_size[0], new_size[1]/original_size[1])
@@ -329,9 +340,26 @@ class VideoTracker(object):
 
         return np.array([x_min, y_min, x_max, y_max])
 
+    def compare_class(self, class_id):
+        if (class_id >= 0 and class_id <= 4):
+            class_id = 0
+        if (class_id > 4 and class_id <= 7):
+            class_id = 1
+        if (class_id == 9 or class_id == 10):
+            class_id = 2
+        if (class_id == 8 or (class_id <= 13 and class_id > 10)):
+            class_id = 3
+        return class_id
+
+    def run_classifier(self, clf_model, clf_labels, obj_img):
+        if len(obj_img) == 0:
+            return -1
+        class_id = mobileNet.predict_from_model(obj_img, clf_model, clf_labels)
+        return int(class_id)
+
     # Tracktor
     def tracking_processing(self, track_boxes, boxes_ids, image, _image, ROI_image):
-        # if len(track_boxes)>0:
+        if len(track_boxes)>0:
             boxes, scores, labels = self.detector(image)
             # print("len_ids: ", len(boxes_ids))
             boxes = np.array(boxes)
@@ -370,10 +398,10 @@ class VideoTracker(object):
             # indexes = cv2.dnn.NMSBoxes(boxes, scores, 0.5, 0.4)
 
             return boxes, scores, labels, boxes_ids
-        # else:
-        #     return np.empty(0), np.empty(0), np.empty(0), np.empty(0)
+        else:
+            return np.empty(0), np.empty(0), np.empty(0), np.empty(0)
 
-    def run_detection(self, image, _image, ROI_image, track_boxes, track_scores):
+    def run_detection(self, image, ROI_image, track_boxes, track_scores):
         boxes, scores, labels = self.detector(image)
         
         boxes = np.array(boxes)
@@ -445,24 +473,29 @@ class VideoTracker(object):
         #     cv2.putText(_image, class_name + ": " + str(round(scores[i], 2)), (x1, y1), \
         #                 cv2.FONT_HERSHEY_SIMPLEX,1, (255, 255, 0), 1)
     
-        return image, boxes, scores, labels
+        return boxes, scores, labels
     
     def run_track_and_detect(self, image, _image, boxes, boxes_ids, ROI_image, count_frame):
         # get track
         track_boxes, track_scores, track_labels, track_ids = self.tracking_processing(boxes, boxes_ids, image, _image, ROI_image)
-        
+        print('track boxxxxxxxxxxx: ', track_boxes)
         # add track if first frame
+        # if len(self.tracks) == 0:
+        #     self.add()
+
+        # track_ids_list = [item.id for item in self.tracks]
         if count_frame == 1:
             self.add(track_boxes, track_scores)
-            track_ids = np.arange(len(track_boxes)) 
+            # track_ids = np.arange(len(track_boxes))
 
         # get detect
-        image, det_boxes, det_scores, det_labels = self.run_detection(image, _image, ROI_image, track_boxes, track_scores)
+        det_boxes, det_scores, det_labels = self.run_detection(image, ROI_image, track_boxes, track_scores)
+        
         
         print("################")
         print("len track_boxes: ", len(track_boxes))
         print("len track_scores: ", len(track_scores))
-        print("len track ids: ", len(track_ids))
+        # print("len track ids: ", len(track_ids))
         print("###############")
         # draw
         for i in range(len(track_boxes)):
@@ -476,6 +509,41 @@ class VideoTracker(object):
                 pass
 
         return _image, track_boxes, track_scores, track_labels, track_ids, det_boxes, det_scores, det_labels
+
+    def counting(self, count_frame, cropped_frame, tracks_list, counted_obj, arr_cnt_class, clf_model=None, clf_labels=None):
+        vehicles_detection_list = []
+        frame_id = count_frame
+        class_id = None
+        # for (track_id, info_obj) in objs_dict.items(): 
+        for item in tracks_list:
+                centroid = get_center(item.position)
+                track_id = item.id 
+
+                if int(track_id) in counted_obj: #check if track_id in counted_object ignore it
+                    continue
+                else: #if track_id not in counted object then check if centroid in range of ROI then count it
+                    if len(centroid) != 0 and check_in_polygon(centroid, self.polygon_ROI) == False:
+                        item.point_out = centroid
+                        if self.use_classify:
+                            bbox = item.best_bbox
+                            obj_img = cropped_frame[int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2]),:] #crop obj following bbox for clf
+                            class_id = self.run_classifier(clf_model, clf_labels, obj_img)
+                            if class_id == -1:
+                                continue
+                        else:
+                            class_id = item.class_id
+
+                        # MOI of obj
+                        moi  ,_ = MOI.compute_MOI(self.cfg, item.point_in, item.point_out)
+
+                        counted_obj.append(int(track_id))
+                        class_id = self.compare_class(class_id)
+                        arr_cnt_class[class_id][moi-1] += 1
+                        print("[INFO] arr_cnt_class: \n", arr_cnt_class)
+                        vehicles_detection_list.append((frame_id, moi, class_id+1))
+        
+        print("--------------")
+        return arr_cnt_class, vehicles_detection_list
 
     def process(self, image, _image, count_frame):
         for track in self.tracks:
@@ -495,35 +563,38 @@ class VideoTracker(object):
 
         # run detect and track
         image, track_boxes, track_scores, track_labels, track_ids, det_boxes, det_scores, det_labels = self.run_track_and_detect(image, _image, positions, ids, self.motion_model_cfg.ROI_DEFAULT, count_frame)
+        track_ids = np.array(track_ids)
         print("############")
         print("[INFO] track ID: ", track_ids)
         print("############")
-        # for track in track_boxes:
-        #     print("[INFO] track shape: ", track.shape)
+        for track in track_boxes:
+            print("[INFO] track shape: ", track.shape)
         # update position and score for the current track
-        # track_to_inactive_list = []
-        # if len(self.tracks):
-        #     print("[INFO] update track and score")
-        #     print("[INFO] len track boxes in update box and score: ", len(self.tracks))
-        #     print("[INFO] track boxes: ", track_boxes)
-        #     print("[INFO] track scores: ", track_scores)
-        #     for i in range(len(self.tracks)):
-        #         if self.tracks[i].id in track_ids:
-        #             # print("[INFO] self.tracks[i].id: ", self.tracks[i].id)
-        #             # index = track_ids == self.tracks[i].id 
-        #             # index = index.nonzero()
-        #             # index = i for i in range(len(track_ids)) if track_ids[i] == self.tracks[i].id
-        #             for j in range(len(track_ids)):
-        #                 if track_ids[j] == self.tracks[i].id:
-        #                     # index = i
-        #                     print("[INFO] track box update : ", track_boxes[j])
-        #                     self.tracks[i].position = track_boxes[j]
-        #                     print("[INFO] tracks[i].position update: ", self.tracks[i].position)
-        #                     self.tracks[i].score = track_scores[j]
-        #                     break
+        track_to_inactive_list = []
+        if len(self.tracks):
+            print("[INFO] update track and score")
+            print("[INFO] len track boxes in update box and score: ", len(self.tracks))
+            print("[INFO] track boxes: ", track_boxes)
+            print("[INFO] track scores: ", track_scores)
+            for i in range(len(self.tracks)):
+                if self.tracks[i].id in track_ids:
+                    print("[INFO] self.tracks[i].id: ", self.tracks[i].id)
+                    # index = track_ids == self.tracks[i].id 
+                    # index = index.nonzero()
+                    # index = i #for i in range(len(track_ids)) if track_ids[i] == self.tracks[i].id
+                    # for j, track_id in track_ids:
+                    #     print('track_ids', track_ids)
+                    #     print(track_id)
+                    #     if track_id == self.tracks[i].id:
+                    #         index = i
+                    #         print("[INFO] track box update : ", track_boxes[j])
+                    #         self.tracks[i].position = track_boxes[j]
+                    #         print("[INFO] tracks[i].position update: ", self.tracks[i].position)
+                    #         self.tracks[i].score = track_scores[j]
+                    #         break
         
-        #             # self.tracks[i].position = track_boxes[index]
-        #             # self.tracks[i].score = track_scores[index]
+                    # self.tracks[i].position = track_boxes[index]
+                    # self.tracks[i].score = track_scores[index]
    
         #         else:
         #             # if the index is not in the ids set to inactive
@@ -541,6 +612,11 @@ class VideoTracker(object):
         return image
 
     def run(self):
+        clf_model = None
+        clf_labels = None
+        if self.use_classify:
+            clf_model, clf_labels = mobileNet.load_model_clf(self.cfg)
+
         asyncVideo_flag = self.args.asyncVideo_flag
         writeVideo_flag = self.args.writeVideo_flag
 
@@ -566,6 +642,10 @@ class VideoTracker(object):
         fps = 0.0
         fps_imutils = imutils.video.FPS().start()
 
+        list_classes = ['loai_1', 'loai_2', 'loai_3', 'loai_4']
+        arr_cnt_class = np.zeros((len(list_classes), self.number_MOI), dtype=int)
+
+        counted_obj = []
         count_frame = 0
         while True:
             count_frame += 1
@@ -577,6 +657,28 @@ class VideoTracker(object):
             _frame = frame
             # process 
             frame = self.process(frame, _frame, count_frame)
+
+            # counting
+            arr_cnt_class, vehicles_detection_list = self.counting(count_frame,_frame, self.tracks, counted_obj, arr_cnt_class, clf_model, clf_labels)
+
+            # visual ROI
+            frame = MOI.config_cam(frame, self.cfg)
+
+            # draw result board
+            ROI_board = np.zeros((150, 170, 3), np.int)
+            frame[0:150, 0:170] = ROI_board
+            frame, list_col = init_board(frame, self.number_MOI)
+            frame = write_board(frame, arr_cnt_class, list_col, self.number_MOI)
+            print('frame---------------------------------')
+
+            # write result to txt
+            result_filename = os.path.join(
+                    './logs/output', self.video_name + '_result.txt')
+
+            with open(result_filename, 'a+') as result_file:
+                for frame_id, movement_id, vehicle_class_id in vehicles_detection_list:
+                    result_file.write('{} {} {} {}\n'.format(
+                        self.video_name, frame_id, movement_id, vehicle_class_id))
 
             # visualize
             if self.args.visualize:
@@ -616,19 +718,67 @@ def parse_args():
     parser.add_argument("VIDEO_PATH", type=str)
     parser.add_argument("--config_detection", type=str, default="./configs/yolov3.yaml")
     parser.add_argument("--motion", type=str, default="./configs/motion.yaml")
-    # parser.add_argument("--config_cam", type=str, default="./configs/cam1.yaml")
+    parser.add_argument("--config_cam", type=str, default="./configs/cam18.yaml")
+    parser.add_argument("--use_classify", type=bool, default=False)
+    parser.add_argument("--config_classifier", type=str, default="./configs/mobileNet.yaml")
     parser.add_argument("-v", "--visualize", type=bool, default=False)
     parser.add_argument("-w", "--writeVideo_flag", type=bool, default=False)
     parser.add_argument("--asyncVideo_flag", type=bool, default=False)
 
     return parser.parse_args()
 
+def create_logs_dir():
+    if not os.path.exists('logs'):
+        os.mkdir('logs')
+
+    log_detected_dir = os.path.join('logs', 'detection')
+    if not os.path.exists(log_detected_dir):
+        os.mkdir(log_detected_dir)
+
+    log_tracking_dir = os.path.join('logs', 'tracking')
+    if not os.path.exists(log_tracking_dir):
+        os.mkdir(log_tracking_dir)
+
+    log_output_dir = os.path.join('logs', 'output')
+    if not os.path.exists(log_output_dir):
+        os.mkdir(log_output_dir)
+
+    return log_detected_dir, log_tracking_dir, log_output_dir
+
+
+def create_cam_log(cam_name, log_detected_dir, log_tracking_dir, log_output_dir):
+    log_detected_cam_dir = os.path.join(log_detected_dir, cam_name)
+    if not os.path.exists(log_detected_cam_dir):
+        os.mkdir(log_detected_cam_dir)
+
+    log_tracking_cam_dir = os.path.join(log_tracking_dir, cam_name)
+    if not os.path.exists(log_tracking_cam_dir):
+        os.mkdir(log_tracking_cam_dir)
+
+    log_output_cam_dir = os.path.join(log_output_dir, cam_name)
+    if not os.path.exists(log_output_cam_dir):
+        os.mkdir(log_output_cam_dir)
+
+    return log_detected_cam_dir, log_tracking_cam_dir, log_output_cam_dir
+
 if __name__ == '__main__':
+    if os.path.exists("logs"):
+        shutil.rmtree('./logs')
+
     args = parse_args()
     cfg = get_config()
     # setup code
     cfg.merge_from_file(args.config_detection)
     cfg.merge_from_file(args.motion)
+    cfg.merge_from_file(args.config_cam)
+    cfg.merge_from_file(args.config_classifier)
+
+    # create dir/subdir logs
+    log_detected_dir, log_tracking_dir, log_output_dir = create_logs_dir()
+
+    # create dir cam log
+    log_detected_cam_dir, log_tracking_cam_dir, log_output_cam_dir = create_cam_log(cfg.CAM.NAME,
+                                                                                    log_detected_dir, log_tracking_dir, log_output_dir)
 
     # run code 
     video_tracker = VideoTracker(cfg, args)
